@@ -1,16 +1,39 @@
 package ee.murkaje.brainfuck;
 
 public enum IRKind {
-  ADDP,       // >
-  DECP,       // <
-  ADD,        // +
-  DEC,        // -
+  ADDP,       // > | x      : ptr += x
+  DECP,       // < | x      : ptr -= x
+  ADD,        // + | x | y  : data[ptr+y] += x
+  DEC,        // - | x | y  : data[ptr+y] -= x
   READ,       // ,
   WRITE,      // .
-  JZ,         // [
-  JNZ,        // ]
+  JZ,         // [ | x      : if(data[ptr] == 0) pc = x
+  JNZ,        // ] | x      : if(data[ptr] != 0) pc = x
 
-  LOOP_ZERO,  // [-] : c_n = 0
-  LOOP_MOVP,  // [>>>>>] : while(data[ptr] != 0) { ptr += 5; }
-  LOOP_MOVD;  // [-<<<<<+>>>>>] : c_{n-5} += c_n; c_n = 0
+  LOOP_SET,   // [-](+,x)       | x : data[ptr] = x
+  LOOP_MOVP,  // [(>,x)]        | x : while(data[ptr] != 0) { ptr += x; }
+  LOOP_MOVD;  // [-(<,x)+(>,x)] | x : data[ptr-x] += data[ptr]; data[ptr] = 0
+
+  public static IRKind fromChar(char opcode) {
+    switch (opcode) {
+      case '>':
+        return ADDP;
+      case '<':
+        return DECP;
+      case '+':
+        return ADD;
+      case '-':
+        return DEC;
+      case ',':
+        return READ;
+      case '.':
+        return WRITE;
+      case '[':
+        return JZ;
+      case ']':
+        return JNZ;
+      default:
+        throw new IllegalArgumentException("Unknown opcode: " + opcode);
+    }
+  }
 }

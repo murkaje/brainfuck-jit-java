@@ -12,14 +12,19 @@ public class Main {
 
     String program;
 
-    try(InputStream in = Main.class.getClassLoader().getResourceAsStream("mandelbrot.bf");
-        BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
+    try (InputStream in = Main.class.getClassLoader().getResourceAsStream("mandelbrot.bf");
+         BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
       program = reader.lines().collect(Collectors.joining());
     }
 
     BrainFuck brainFuck = new BrainFuck(program.toCharArray());
-    Duration time = brainFuck.interpret();
 
+    Duration time;
+
+    time = brainFuck.interpretDirect();
+    System.out.println("Elapsed: " + time);
+
+    time = brainFuck.interpretOpt();
     System.out.println("Elapsed: " + time);
   }
 }
