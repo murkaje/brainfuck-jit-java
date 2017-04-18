@@ -17,8 +17,8 @@ public class Main {
       program = reader.lines().collect(Collectors.joining());
     }
 
-    BrainFuck brainFuck = new BrainFuck();
-    Duration time = brainFuck.interpret(program.toCharArray());
+    BrainFuck brainFuck = new BrainFuck(program.toCharArray());
+    Duration time = brainFuck.interpret();
 
     System.out.println("Elapsed: " + time);
   }
