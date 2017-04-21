@@ -3,20 +3,51 @@ package ee.murkaje.brainfuck;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
-import java.time.Duration;
-import java.time.Instant;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.NoSuchElementException;
 
-import gnu.trove.map.TIntIntMap;
-import gnu.trove.map.hash.TIntIntHashMap;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
+
+/*
+ * TODO: memset data+ptr ... data+ptr+off
+ * (LOOP_ZERO, 1, 0)
+ * (ADDP, 1, 0)
+ * (LOOP_ZERO, 1, 0)
+ * (ADDP, 1, 0)
+ * (LOOP_ZERO, 1, 0)
+ * (ADDP, 1, 0)
+ * (LOOP_ZERO, 1, 0)
+ * (ADDP, 1, 0)
+ * (LOOP_ZERO, 1, 0)
+ * (ADDP, 1, 0)
+ * (LOOP_ZERO, 1, 0)
+ * (ADDP, 1, 0)
+ * (LOOP_ZERO, 1, 0)
+ * (ADDP, 1, 0)
+ * (LOOP_ZERO, 1, 0)
+ * (ADDP, 1, 0)
+ * (LOOP_ZERO, 1, 0)
+ *
+ * TODO: more complicated moves
+ *
+ * [- >>>-<<< <<<<<<<<<<<+>>>>>>>>>>>]
+ * ->
+ * (LOOP_MOVD, 3, -1)(LOOP_MOVD, -11, 1)
+ *
+ */
 
 public class BrainFuck {
-
-  // TODO: Brainfuck profiling, most common loops, etc.
 
   private char[] program;
   private List<IROpCode> irCode = new ArrayList<>();
@@ -36,28 +67,115 @@ public class BrainFuck {
     this.in = in;
   }
 
+  private void checkAndOptAddOff() {
+    if (irCode.size() < 3) return;
+
+    IROpCode o1 = irCode.get(irCode.size() - 3);
+    IROpCode o2 = irCode.get(irCode.size() - 2);
+    IROpCode o3 = irCode.get(irCode.size() - 1);
+
+    int off;
+    int ptrDelta;
+
+    if (o1.getKind() == IRKind.ADDP && o3.getKind() == IRKind.DECP) {
+      off = o1.getArg1();
+      ptrDelta = o1.getArg1() - o3.getArg1();
+    }
+    else if (o1.getKind() == IRKind.DECP && o3.getKind() == IRKind.ADDP) {
+      off = -o1.getArg1();
+      ptrDelta = o3.getArg1() - o1.getArg1();
+    }
+    else {
+      return;
+    }
+
+    if (o2.getKind() == IRKind.ADD || o2.getKind() == IRKind.DEC) {
+      irCode.remove(irCode.size() - 1);
+      irCode.remove(irCode.size() - 1);
+      irCode.remove(irCode.size() - 1);
+
+      irCode.add(new IROpCode(o2.getKind(), o2.getArg1(), off));
+
+      if (ptrDelta < 0) {
+        irCode.add(new IROpCode(IRKind.DECP, -ptrDelta));
+      }
+      else if (ptrDelta > 0) {
+        irCode.add(new IROpCode(IRKind.ADDP, ptrDelta));
+      }
+    }
+  }
+
+  // Expect: checkAndOptAddOff
+  private boolean checkAndOptLoopAdd() {
+    if (irCode.size() < 3) return false;
+
+    IROpCode o1 = irCode.get(irCode.size() - 3);
+    IROpCode o2 = irCode.get(irCode.size() - 2);
+    IROpCode o3 = irCode.get(irCode.size() - 1);
+
+    if (o1.getKind() != IRKind.JZ) return false;
+
+    if (o2.getKind() != IRKind.DEC || o2.getArg1() != 1 || o2.getArg2() != 0) return false;
+
+    if (o3.getKind() != IRKind.DEC && o3.getKind() != IRKind.ADD) return false;
+
+    irCode.remove(irCode.size() - 1);
+    irCode.remove(irCode.size() - 1);
+    irCode.remove(irCode.size() - 1);
+
+    int off = o3.getArg2();
+    int mult = (o3.getKind() == IRKind.ADD) ? o3.getArg1() : -o3.getArg1();
+    irCode.add(new IROpCode(IRKind.LOOP_MOVD, mult, off));
+
+    return true;
+  }
+
   private void parseIR() {
     Deque<IROpCode> jmpStack = new ArrayDeque<>();
 
     for (int pc = 0; pc < program.length; pc++) {
       char instruction = program[pc];
-      int rep;
 
       switch (instruction) {
         case '>':
         case '<':
         case '+':
-        case '-':
-          rep = countRep(pc, instruction);
+        case '-': {
+          int rep = countRep(pc, instruction);
           irCode.add(new IROpCode(IRKind.fromChar(instruction), rep));
           pc += rep - 1;
-          break;
 
+          // (>,x)(+,y)(<,x) -> (+,y,x)
+          if (instruction == '<' || instruction == '>') {
+            checkAndOptAddOff();
+          }
+
+          break;
+        }
         case '[': {
-          // TODO: Handle common hot loops like [-] [>>>>>] [-<<<<<+>>>>>]
+          // [-]
+          if (pc + 2 < program.length && (program[pc + 1] == '-' || program[pc + 1] == '+') && program[pc + 2] == ']') {
+            irCode.add(new IROpCode(IRKind.LOOP_ZERO));
+            pc += 2;
+            break;
+          }
+
+          // [(>,x)] or [(<,x)]
+          if (pc + 2 < program.length && (program[pc + 1] == '<' || program[pc + 1] == '>')) {
+            char ins = program[pc + 1];
+            int rep = countRep(pc + 1, ins);
+            if (pc + rep < program.length && program[pc + rep + 1] == ']') {
+              int dir = (ins == '<') ? -1 : 1;
+              irCode.add(new IROpCode(IRKind.LOOP_MOVP, rep * dir));
+              pc += rep + 1;
+              break;
+            }
+          }
+
           IROpCode label = new IROpCode(IRKind.fromChar(instruction), irCode.size());
-          irCode.add(label);
           jmpStack.push(label);
+          irCode.add(label);
+
           break;
         }
 
@@ -70,10 +188,14 @@ public class BrainFuck {
             throw new RuntimeException("Syntax error: unmatched ']' at pc=" + pc);
           }
 
-          // Take PC from previous label in stack and backpatch label with current PC
-          IROpCode curLabel = new IROpCode(IRKind.fromChar(instruction), prevLabel.getArg1());
-          prevLabel.setArg1(irCode.size());
-          irCode.add(curLabel);
+          // [-<+>]
+          if (!checkAndOptLoopAdd()) {
+            // Take PC from previous label in stack and backpatch label with current PC
+            IROpCode curLabel = new IROpCode(IRKind.fromChar(instruction), prevLabel.getArg1());
+            prevLabel.setArg1(irCode.size());
+            irCode.add(curLabel);
+          }
+
           break;
         }
 
@@ -83,6 +205,10 @@ public class BrainFuck {
         default:
           // Comment
       }
+    }
+
+    for (int i = 0; i < irCode.size(); i++) {
+      System.out.println(i + ": " + irCode.get(i));
     }
   }
 
@@ -94,73 +220,11 @@ public class BrainFuck {
     return count;
   }
 
-  public Duration interpretDirect() {
-    Instant begin = Instant.now();
+  byte[] data = new byte[4096];
 
-    TIntIntMap jmpCache = new TIntIntHashMap();
-
-    byte[] data = new byte[4096];
-    int ptr = 0;
-
-    for (int pc = 0; pc < program.length; pc++) {
-      char instruction = program[pc];
-      switch (instruction) {
-        case '<':
-          ptr--;
-          break;
-        case '>':
-          ptr++;
-          break;
-        case '+':
-          data[ptr]++;
-          break;
-        case '-':
-          data[ptr]--;
-          break;
-        case ',':
-          try {
-            data[ptr] = (byte) in.read();
-          }
-          catch (IOException e) {
-            throw new RuntimeException("Could not read input at pc=" + pc, e);
-          }
-          break;
-        case '.':
-          out.print((char) data[ptr]);
-          break;
-        case '[':
-          if (data[ptr] != 0) break;
-
-          if (!jmpCache.containsKey(pc)) {
-            jmpCache.put(pc, seekJmp(pc, 1));
-          }
-          pc = jmpCache.get(pc);
-
-          break;
-        case ']':
-          if (data[ptr] == 0) break;
-
-          if (!jmpCache.containsKey(pc)) {
-            jmpCache.put(pc, seekJmp(pc, -1));
-          }
-          pc = jmpCache.get(pc);
-
-          break;
-        default:
-          // Comment
-      }
-    }
-
-    Instant end = Instant.now();
-    return Duration.between(begin, end);
-  }
-
-  public Duration interpretOpt() {
-    Instant begin = Instant.now();
-
+  public void interpretOpt() {
     parseIR();
 
-    byte[] data = new byte[4096];
     int ptr = 0;
 
     for (int pc = 0; pc < irCode.size(); pc++) {
@@ -174,10 +238,10 @@ public class BrainFuck {
           ptr -= instruction.getArg1();
           break;
         case ADD:
-          data[ptr] += instruction.getArg1();
+          data[ptr + instruction.getArg2()] += instruction.getArg1();
           break;
         case DEC:
-          data[ptr] -= instruction.getArg1();
+          data[ptr + instruction.getArg2()] -= instruction.getArg1();
           break;
         case READ:
           try {
@@ -200,37 +264,76 @@ public class BrainFuck {
             pc = instruction.getArg1();
           }
           break;
+        case LOOP_ZERO:
+          data[ptr] = 0;
+          break;
+        case LOOP_MOVP:
+          while (data[ptr] != 0) {
+            ptr += instruction.getArg1();
+          }
+          break;
+        case LOOP_MOVD:
+          if (data[ptr] != 0) {
+            data[ptr + instruction.getArg2()] += (byte) (instruction.getArg1() * data[ptr]);
+            data[ptr] = 0;
+          }
+          break;
         default:
           throw new RuntimeException("Not implemented: " + instruction.getKind());
       }
     }
-
-    Instant end = Instant.now();
-    return Duration.between(begin, end);
   }
 
-  @Deprecated
-  private int seekJmp(int pc, int direction) {
-    if (direction != -1 && direction != 1) throw new IllegalArgumentException("direction must be 1 or -1");
+  private Class<?> cachedClass = null;
 
-    char instruction = program[pc];
-    int bracketLevel = 1;
-
-    while (bracketLevel != 0 && pc >= 0 && pc < program.length) {
-      pc += direction;
-
-      if (program[pc] == '[') {
-        bracketLevel += direction;
+  public BrainFuckProgram compile() {
+    try {
+      if (cachedClass != null) {
+        Constructor<?> constructor = cachedClass.getDeclaredConstructor(PrintStream.class, InputStream.class);
+        return (BrainFuckProgram) constructor.newInstance(out, in);
       }
-      else if (program[pc] == ']') {
-        bracketLevel -= direction;
-      }
-    }
 
-    if (bracketLevel != 0) {
-      throw new RuntimeException("Syntax Error: Unmatched '" + instruction + "' at pc=" + pc);
-    }
+      parseIR();
 
-    return pc;
+      ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
+      String className = Type.getInternalName(BrainFuckProgram.class) + "$compiled$" + BrainFuckProgram.getNextId();
+      cw.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, className, null, Type.getInternalName(BrainFuckProgram.class), null);
+
+      cw.visitSource("mandelbrot.bf", null);
+
+      MethodVisitor initMv = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "(Ljava/io/PrintStream;Ljava/io/InputStream;)V", null, null);
+      initMv.visitVarInsn(Opcodes.ALOAD, 0);
+      initMv.visitVarInsn(Opcodes.ALOAD, 1);
+      initMv.visitVarInsn(Opcodes.ALOAD, 2);
+      initMv.visitMethodInsn(Opcodes.INVOKESPECIAL, Type.getInternalName(BrainFuckProgram.class), "<init>", "(Ljava/io/PrintStream;Ljava/io/InputStream;)V", false);
+      initMv.visitInsn(Opcodes.RETURN);
+      initMv.visitMaxs(-1, -1);
+      initMv.visitEnd();
+
+      MethodVisitor runMv = cw.visitMethod(Opcodes.ACC_PUBLIC, "run", "()V", null, null);
+      IRCompilingMethodAdapter compilingMv = new IRCompilingMethodAdapter(runMv, className, irCode);
+      compilingMv.visitCode();
+      compilingMv.visitEnd();
+
+      cw.visitEnd();
+      byte[] classBytes = cw.toByteArray();
+
+      Path filePath = Paths.get("target/generated/", className + ".class");
+      Files.createDirectories(filePath.getParent());
+      Files.write(filePath, classBytes);
+
+      ClassLoader cl = BrainFuck.class.getClassLoader();
+      Method defineClass = ClassLoader.class.getDeclaredMethod("defineClass", String.class, byte[].class, int.class, int.class);
+      defineClass.setAccessible(true);
+      Class<?> compiledProgramClass = (Class<?>) defineClass.invoke(cl, className.replace("/", "."), classBytes, 0, classBytes.length);
+
+      cachedClass = compiledProgramClass;
+
+      Constructor<?> constructor = compiledProgramClass.getDeclaredConstructor(PrintStream.class, InputStream.class);
+      return (BrainFuckProgram) constructor.newInstance(out, in);
+    }
+    catch (Exception e) {
+      throw new RuntimeException("Compilation failed", e);
+    }
   }
 }

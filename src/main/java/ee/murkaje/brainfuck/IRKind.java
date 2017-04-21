@@ -10,9 +10,9 @@ public enum IRKind {
   JZ,         // [ | x      : if(data[ptr] == 0) pc = x
   JNZ,        // ] | x      : if(data[ptr] != 0) pc = x
 
-  LOOP_SET,   // [-](+,x)       | x : data[ptr] = x
-  LOOP_MOVP,  // [(>,x)]        | x : while(data[ptr] != 0) { ptr += x; }
-  LOOP_MOVD;  // [-(<,x)+(>,x)] | x : data[ptr-x] += data[ptr]; data[ptr] = 0
+  LOOP_ZERO,  // [-]                        : data[ptr] = x
+  LOOP_MOVP,  // [(>,x)]            | x     : while(data[ptr] != 0) { ptr += x; }
+  LOOP_MOVD;  // [-(+,x,y)] | x | y : data[ptr+y] += x * data[ptr]; data[ptr] = 0
 
   public static IRKind fromChar(char opcode) {
     switch (opcode) {

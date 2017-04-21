@@ -9,22 +9,27 @@ import java.util.stream.Collectors;
 public class Main {
 
   public static void main(String[] args) throws Exception {
-
-    String program;
+//    Thread.sleep(8000);
+    String code;
 
     try (InputStream in = Main.class.getClassLoader().getResourceAsStream("mandelbrot.bf");
          BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
-      program = reader.lines().collect(Collectors.joining());
+      code = reader.lines().collect(Collectors.joining());
     }
 
-    BrainFuck brainFuck = new BrainFuck(program.toCharArray());
+    BrainFuck brainFuck = new BrainFuck(code.toCharArray());
+//    Duration time = Timer.measureExecution(brainFuck::interpretOpt);
+//    System.out.println("Elapsed: " + time);
 
-    Duration time;
+    // Should also measure this to be fair
+    BrainFuckProgram program = brainFuck.compile();
+    Duration time2 = Timer.measureExecution(program::run);
+    System.out.println("Elapsed: " + time2);
 
-    time = brainFuck.interpretDirect();
-    System.out.println("Elapsed: " + time);
-
-    time = brainFuck.interpretOpt();
-    System.out.println("Elapsed: " + time);
+    for(int i=0; i<10000; i++) {
+      program = brainFuck.compile();
+      time2 = Timer.measureExecution(program::run);
+      System.out.println(i + ": Elapsed: " + time2);
+    }
   }
 }
